@@ -2,7 +2,7 @@
 <html lang="id" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>SNAPBOOTH Live – By Ikyy</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;700&family=Playfair+Display:ital,wght@0,700;1,400&family=Caveat:wght@700&display=swap" rel="stylesheet">
@@ -545,7 +545,40 @@ html.pre .hero h1 .w,html.pre .hero p,html.pre .hero .row{opacity:0}
 @keyframes sbTw{50%{opacity:.9;transform:scale(1.3) rotate(25deg)}}
 .sb-streak{position:absolute;left:0;right:0;top:34%;height:2px;opacity:0;z-index:2;pointer-events:none;background:linear-gradient(90deg,transparent,#f7cb53,#ff3b68,transparent);box-shadow:0 0 24px #ff3b68}
 .lite .sb-sp{display:none}
+
+/* ===== v8: perbaikan responsif + kunci zoom ===== */
+html{width:100%;max-width:100%;overflow-x:hidden;overflow-x:clip;-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:pan-x pan-y}
+body{width:100%;max-width:100%;overflow-x:hidden;overflow-x:clip;position:relative;touch-action:pan-x pan-y}
+main{position:relative;max-width:100%;overflow-x:clip}
+img,video,canvas,svg{max-width:100%}
+.hero{overflow-x:clip}
+.amb,.sb-ring,.deco{max-width:100vw}
+nav{width:100%;max-width:100vw}
+button,.btn,.chip,.tab-btn,.th{touch-action:manipulation}
+input,select,textarea{font-size:16px}
+.n-name{max-width:96vw}
+@media(max-width:600px){
+  .logo{min-width:0;overflow:hidden}
+  .nr{flex:0 0 auto}
+}
+@media(min-width:1400px){
+  section{max-width:1300px}
+}
 </style>
+<script>
+/* kunci zoom (pinch, double-tap, Ctrl+scroll, Ctrl +/-) */
+(function(){
+  var o={passive:false};
+  ['gesturestart','gesturechange','gestureend'].forEach(function(t){document.addEventListener(t,function(e){e.preventDefault()},o)});
+  document.addEventListener('touchmove',function(e){if(e.touches&&e.touches.length>1)e.preventDefault()},o);
+  var last=0;
+  document.addEventListener('touchend',function(e){var n=Date.now();if(n-last<300)e.preventDefault();last=n},o);
+  window.addEventListener('wheel',function(e){if(e.ctrlKey)e.preventDefault()},o);
+  window.addEventListener('keydown',function(e){
+    if((e.ctrlKey||e.metaKey)&&['+','-','=','_','0'].indexOf(e.key)>-1)e.preventDefault();
+  });
+})();
+</script>
 </head>
 <body>
 <div class="intro" id="intro"><i class="ip t"></i><i class="ip b"></i><div class="il"><b>SNAP<em>●</em>BOOTH</b><span>By Ikyy</span><i class="iline"></i></div></div>

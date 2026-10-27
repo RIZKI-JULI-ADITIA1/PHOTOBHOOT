@@ -2263,6 +2263,103 @@ async function loadImg(f) {
     return im;
   } finally { setTimeout(() => URL.revokeObjectURL(url), 5000); }
 }
+
+/* ===================== v39: Konfirmasi Slot Foto =====================
+   Dipanggil saat foto dari galeri HP/PC kurang dari jumlah slot frame.
+   Mengembalikan Promise: daftar foto {me, ot} (urut sesuai slot) atau null jika dibatalkan.
+   Sisa slot yang tidak diisi akan diisi ulang otomatis oleh fillShots() seperti sebelumnya. */
+function slotConfirm(first) {
+  return new Promise(resolve => {
+    const fr = cur(), n = fr.slots.length;
+    const list = first.slice(0, n);
+    let mode = 'ask', repl = -1, done = false, note = '';
+    const root = document.createElement('div');
+    root.id = 'slc'; root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true'); root.setAttribute('aria-labelledby', 'slcT');
+    root.innerHTML = '<div class="slc-card"><h3 id="slcT"></h3><p id="slcP"></p><div class="slc-g" id="slcG"></div><div class="slc-bt" id="slcB"></div></div>';
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.hidden = true; root.append(inp);
+    const T = root.querySelector('#slcT'), P = root.querySelector('#slcP'), G = root.querySelector('#slcG'), B = root.querySelector('#slcB');
+
+    function close(v) {
+      if(done) return; done = true;
+      document.removeEventListener('keydown', onKey, true);
+      root.remove(); document.documentElement.classList.remove('fcx-lock');
+      resolve(v);
+    }
+    function onKey(e) { if(e.key === 'Escape') { e.stopPropagation(); close(null); } }
+    document.addEventListener('keydown', onKey, true);
+
+    const thumb = (photo, w, h) => {
+      const c = document.createElement('canvas'); c.width = Math.round(w * 2); c.height = Math.round(h * 2);
+      const x = c.getContext('2d'), s = photo.me, sw = s.width, sh = s.height, k = Math.max(c.width / sw, c.height / sh);
+      x.drawImage(s, (c.width - sw * k) / 2, (c.height - sh * k) / 2, sw * k, sh * k);
+      return c;
+    };
+    const btn = (cls, txt, fn, dis) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'slc-b ' + cls; b.textContent = txt; b.disabled = !!dis; b.onclick = fn; return b; };
+    const pick = (idx) => { repl = idx; inp.multiple = idx < 0; inp.click(); };
+
+    function draw() {
+      const c = list.length, left = n - c;
+      if(mode === 'ask') {
+        T.textContent = 'Foto kamu baru ' + c + ' dari ' + n;
+        P.textContent = 'Frame “' + fr.name + '” punya ' + n + ' slot foto. ' + (c === 1 ? 'Mau pakai foto ini untuk semua sesi?' : 'Mau sisa ' + left + ' slot diisi ulang dengan fotomu?');
+      } else {
+        T.textContent = left ? 'Kurang ' + left + ' foto lagi' : 'Semua slot sudah terisi ✓';
+        P.textContent = note || (left ? 'Ketuk kotak kosong untuk menambah foto. Ketuk foto untuk menggantinya.' : 'Kalau sudah pas, tekan “Buat Hasil”.');
+      }
+      G.textContent = '';
+      fr.slots.forEach((s, i) => {
+        const r = Math.max(.55, Math.min(1.8, s.w / s.h)), el = document.createElement('button');
+        el.type = 'button'; el.className = 'slc-s' + (list[i] ? '' : ' empty'); el.style.aspectRatio = String(r);
+        if(list[i]) {
+          el.append(thumb(list[i], 84, 84 / r));
+          el.setAttribute('aria-label', 'Slot ' + (i + 1) + ', terisi' + (mode === 'fill' ? ', ketuk untuk mengganti' : ''));
+          if(mode === 'fill') {
+            el.onclick = () => pick(i);
+            const x = document.createElement('span'); x.className = 'x'; x.textContent = '✕'; x.setAttribute('role', 'button'); x.setAttribute('aria-label', 'Hapus foto slot ' + (i + 1));
+            x.onclick = ev => { ev.stopPropagation(); list.splice(i, 1); note = ''; draw(); };
+            el.append(x);
+          } else el.tabIndex = -1;
+        } else {
+          const pl = document.createElement('span'); pl.className = 'pl'; pl.textContent = '＋'; el.append(pl);
+          el.setAttribute('aria-label', 'Slot ' + (i + 1) + ', kosong' + (mode === 'fill' ? ', ketuk untuk menambah foto' : ''));
+          if(mode === 'fill') el.onclick = () => pick(-1); else el.tabIndex = -1;
+        }
+        const no = document.createElement('span'); no.className = 'no'; no.textContent = i + 1; el.append(no);
+        G.append(el);
+      });
+      B.textContent = '';
+      if(mode === 'ask') {
+        B.append(btn('ok', 'Pakai untuk semua', () => close(list.slice())));
+        B.append(btn('go', 'Tambah ' + left + ' foto lagi', () => { mode = 'fill'; draw(); pick(-1); }));
+      } else {
+        if(left) B.append(btn('go', '＋ Pilih foto', () => pick(-1)));
+        if(left && c) B.append(btn('alt', 'Isi sisanya dengan foto yang sama', () => close(list.slice())));
+        B.append(btn('ok', 'Buat Hasil', () => close(list.slice()), left > 0));
+      }
+      B.append(btn('x', 'Batal', () => close(null)));
+      const f = B.querySelector('.ok:not(:disabled)') || B.querySelector('button'); if(f) try { f.focus({ preventScroll: true }); } catch(e) {}
+    }
+
+    inp.onchange = async () => {
+      const fs = [...inp.files]; inp.value = ''; if(!fs.length) return;
+      P.textContent = 'Memproses foto…';
+      try {
+        const add = [];
+        for(const f of fs.slice(0, 20)) add.push({ me: fitUp(await loadImg(f)), ot: null });
+        if(repl >= 0) { list[repl] = add[0]; note = ''; }
+        else {
+          const room = n - list.length, take = add.slice(0, room);
+          take.forEach(a => list.push(a));
+          note = add.length > room ? (add.length - room) + ' foto tidak muat karena slot sudah penuh.' : '';
+        }
+      } catch(err) { note = 'Foto gagal diproses (' + (err && err.message || err) + '). Coba foto lain.'; }
+      repl = -1; mode = 'fill'; draw();
+    };
+
+    document.documentElement.classList.add('fcx-lock'); document.body.append(root); draw();
+  });
+}
+
 $('#fi').onchange = async e => {
   const files = [...e.target.files].slice(0, 20);
   e.target.value = '';
@@ -2271,9 +2368,16 @@ $('#fi').onchange = async e => {
   try {
     const out = [];
     for(const f of files) out.push({ me: fitUp(await loadImg(f)), ot: null });
-    try { rollFromUpload(out); } catch(e) {}
-    shots = out.slice(0, N()); fillShots(); dots(); compose(); show();
-    upm('Berhasil: ' + files.length + ' foto tersimpan di Galeri Jepretan ✓'); upTray(files, false, true);
+    /* v39: foto kurang dari jumlah slot → tanya dulu, jangan langsung diduplikasi */
+    let use = out, trayDone = false;
+    if(out.length < N()) {
+      upTray(files, false, true); trayDone = true; upm('Foto belum memenuhi semua slot. Pilih dulu ya…');
+      use = await slotConfirm(out);
+      if(!use) { upm('Dibatalkan. Foto belum dipakai. Tekan “Dari Galeri” untuk memilih lagi.'); return; }
+    }
+    try { rollFromUpload(use); } catch(e) {}
+    shots = use.slice(0, N()); fillShots(); dots(); compose(); show();
+    upm('Berhasil: ' + use.length + ' foto tersimpan di Galeri Jepretan ✓'); if(!trayDone) upTray(files, false, true);
   } catch(err) {
     upTray(files, false, false); upm('Foto gagal diproses (' + (err && err.message || err) + '). Coba foto JPG/PNG lain.');
   }
@@ -2992,7 +3096,7 @@ gTick();
 modes(); renderCatalog('Semua', true);
 chips('#fF', Object.keys(FIL), 'f', again);
 chips('#fL', Object.keys(LIGHTS), 'light', () => $('#fL').onclick());
-window.__boot = Promise.all(FRAMES.map(f => f.img.decode().catch(() => {}))).then(() => {
+window.__boot = Promise.all(FRAMES.slice(0, 4).map(f => f.img.decode().catch(() => {}))).then(() => {
   frameThumbs(); acc(); renderCatalog(); dots(); buildFan();
 });
 frameThumbs(); acc(); dots();
@@ -3969,7 +4073,48 @@ html.fcx-lock,html.fcx-lock body{overflow:hidden!important}
 @keyframes bubIn{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
 html.introing #mpBub{display:none}
 #mpCar{transition:opacity .8s}#mpDrop{transition:opacity .6s}
+/* v38: seragam petugas baru */
+#mpPerson.np .pv{fill:#4cc9a0}#mpPerson.np .pw{fill:#2e9b78}#mpPerson.np .pc{fill:#8a5cf0}#mpPerson.np .pv2{stroke:#4cc9a0}
 </style>
+
+<style id="v39">
+/* v39: popup konfirmasi slot foto */
+#slc{position:fixed;inset:0;z-index:10060;display:grid;place-items:center;padding:14px;background:rgba(20,10,4,.62);backdrop-filter:blur(4px);animation:idFade .25s both}
+.slc-card{width:min(520px,100%);max-height:92vh;overflow:auto;overscroll-behavior:contain;background:#fff3cf;border:4px solid #2b1a0e;border-radius:24px;box-shadow:0 8px 0 #2b1a0e,0 28px 60px rgba(0,0,0,.5);color:#2b1a0e;padding:20px 18px 18px;font-family:'Plus Jakarta Sans',system-ui,sans-serif;animation:idIn .4s cubic-bezier(.3,1.5,.5,1) both}
+.slc-card h3{margin:0 0 6px;text-align:center;font:400 26px 'Lilita One','Arial Black',sans-serif;color:#2b1a0e!important}
+.slc-card p{margin:0 0 16px;text-align:center;font-size:14px;font-weight:600;line-height:1.5;color:#2b1a0e}
+.slc-g{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-bottom:18px}
+.slc-s{position:relative;flex:none;width:84px;padding:0;border:3px solid #2b1a0e;border-radius:12px;background:#fffaf0;overflow:hidden;display:block;cursor:default;box-shadow:0 3px 0 #2b1a0e;font-family:inherit}
+#slc .slc-s:not(:disabled):not([tabindex="-1"]){cursor:pointer}
+.slc-s canvas{display:block;width:100%;height:100%}
+.slc-s.empty{border-style:dashed;background:rgba(43,26,14,.07);box-shadow:none}
+.slc-s .pl{position:absolute;inset:0;display:grid;place-items:center;font:400 28px 'Lilita One',sans-serif;color:#8c4a1a}
+.slc-s .no{position:absolute;left:4px;top:4px;min-width:20px;height:20px;padding:0 5px;display:grid;place-items:center;border-radius:10px;border:2px solid #2b1a0e;background:#ffd43b;color:#2b1a0e;font:400 12px 'Lilita One',sans-serif}
+.slc-s .x{position:absolute;right:3px;top:3px;width:22px;height:22px;display:grid;place-items:center;border-radius:50%;border:2px solid #2b1a0e;background:#fff;color:#b3261e;font:700 11px/1 sans-serif;cursor:pointer}
+.slc-bt{display:flex;flex-direction:column;gap:10px}
+.slc-b{font:400 17px 'Lilita One','Arial Black',sans-serif;letter-spacing:.03em;color:#fff;border:3px solid #2b1a0e;border-radius:14px;padding:11px 10px;cursor:pointer;text-shadow:0 2px 0 rgba(0,0,0,.4);transition:transform .15s}
+.slc-b:active:not(:disabled){transform:translateY(3px)}
+.slc-b:disabled{opacity:.45;cursor:not-allowed}
+.slc-b:focus-visible{outline:3px solid #2b1a0e;outline-offset:2px}
+.slc-b.ok{background:linear-gradient(#7fdc3c,#359510);box-shadow:0 4px 0 #1f5a0b}
+.slc-b.go{background:linear-gradient(#4aa3ff,#2468c9);box-shadow:0 4px 0 #123e7d}
+.slc-b.alt{background:linear-gradient(#f0c07c,#d9a05a);color:#2b1a0e;text-shadow:none;box-shadow:0 4px 0 #8c4a1a;font-size:15px}
+.slc-b.x{background:none;border:0;box-shadow:none;color:#8c4a1a;text-shadow:none;font:700 13px 'Plus Jakarta Sans',sans-serif;text-decoration:underline;padding:4px}
+@media(prefers-reduced-motion:reduce){#slc,.slc-card{animation:none!important}}
+
+/* v39: karakter kedua (petugas baru) + bubble-nya */
+#mpPerson2 .pv{fill:#4cc9a0}#mpPerson2 .pw{fill:#2e9b78}#mpPerson2 .pc{fill:#8a5cf0}#mpPerson2 .pv2{stroke:#4cc9a0}
+#mpBub2{position:fixed;z-index:9998;max-width:min(230px,calc(100vw - 16px));padding:9px 12px;background:#eafff6;color:#2b1a0e;border:3px solid #2b1a0e;border-radius:16px;box-shadow:0 4px 0 #2b1a0e;font:400 15px/1.25 'Lilita One','Arial Black',sans-serif;pointer-events:none;animation:bubIn .3s cubic-bezier(.3,1.6,.5,1) both}
+#mpBub2[hidden]{display:none}
+#mpBub2::after{content:"";position:absolute;left:var(--tx,50%);bottom:-11px;translate:-50% 0;border:9px solid transparent;border-top:10px solid #2b1a0e;border-bottom:0}
+html.introing #mpBub2{display:none}
+/* v39: ikon pel berkedip saat petugas minta diklik */
+@keyframes mopBeg{0%,100%{transform:translateX(0) rotate(0)}20%{transform:translateX(-4px) rotate(-12deg)}40%{transform:translateX(4px) rotate(12deg)}60%{transform:translateX(-3px) rotate(-8deg)}80%{transform:translateX(3px) rotate(8deg)}}
+#mopTgl.beg{animation:mopBeg .7s ease-in-out infinite;box-shadow:0 4px 0 #2b1a0e,0 0 0 5px rgba(255,212,59,.95),0 0 22px 8px rgba(255,212,59,.65)}
+#mopTgl.beg2{animation-duration:.28s;box-shadow:0 4px 0 #2b1a0e,0 0 0 5px rgba(255,64,48,.95),0 0 26px 10px rgba(255,64,48,.7)}
+#mopTgl.press{animation:none;transform:translateY(3px) scale(.94);box-shadow:0 1px 0 #2b1a0e}
+</style>
+
 
 <button id="mopTgl" type="button" aria-pressed="true" aria-label="Nyalakan atau matikan pengepel kursor" title="Pengepel kursor: klik untuk nyala/mati">🧹</button>
 <canvas id="mopTrail" aria-hidden="true"></canvas>
@@ -3982,16 +4127,16 @@ html.introing #mpBub{display:none}
         <line id="mpLegB" x1="4" y1="-28" x2="8" y2="0" stroke="#2b1a0e" stroke-width="7" stroke-linecap="round"/>
         <line id="mpLegA2" x1="-4" y1="-28" x2="-8" y2="0" stroke="#3f7fe0" stroke-width="3" stroke-linecap="round"/>
         <line id="mpLegB2" x1="4" y1="-28" x2="8" y2="0" stroke="#3f7fe0" stroke-width="3" stroke-linecap="round"/>
-        <rect x="-12" y="-62" width="24" height="36" rx="10" fill="#ffd43b" stroke="#2b1a0e" stroke-width="3"/>
-        <rect x="-12" y="-44" width="24" height="7" fill="#e8a317" opacity=".55"/>
+        <rect class="pv" x="-12" y="-62" width="24" height="36" rx="10" fill="#ffd43b" stroke="#2b1a0e" stroke-width="3"/>
+        <rect class="pw" x="-12" y="-44" width="24" height="7" fill="#e8a317" opacity=".55"/>
         <circle cx="0" cy="-75" r="14" fill="#ffd9b0" stroke="#2b1a0e" stroke-width="3"/>
-        <path d="M-14 -77 a14 14 0 0 1 28 0 z" fill="#e2412f" stroke="#2b1a0e" stroke-width="3" stroke-linejoin="round"/>
-        <path d="M5 -80 h16 a3 3 0 0 1 0 6 h-16 z" fill="#e2412f" stroke="#2b1a0e" stroke-width="3" stroke-linejoin="round"/>
+        <path class="pc" d="M-14 -77 a14 14 0 0 1 28 0 z" fill="#e2412f" stroke="#2b1a0e" stroke-width="3" stroke-linejoin="round"/>
+        <path class="pc" d="M5 -80 h16 a3 3 0 0 1 0 6 h-16 z" fill="#e2412f" stroke="#2b1a0e" stroke-width="3" stroke-linejoin="round"/>
         <circle cx="7" cy="-72" r="2" fill="#2b1a0e"/>
         <circle cx="10" cy="-67" r="2.6" fill="#ff8aa0" opacity=".7"/>
         <path d="M2 -66 q3 3 6 0" fill="none" stroke="#2b1a0e" stroke-width="2" stroke-linecap="round"/>
         <line id="mpArm" x1="8" y1="-52" x2="16" y2="-46" stroke="#2b1a0e" stroke-width="7" stroke-linecap="round"/>
-        <line id="mpArm2" x1="8" y1="-52" x2="16" y2="-46" stroke="#ffd43b" stroke-width="3" stroke-linecap="round"/>
+        <line class="pv2" id="mpArm2" x1="8" y1="-52" x2="16" y2="-46" stroke="#ffd43b" stroke-width="3" stroke-linecap="round"/>
         <circle id="mpHand" cx="16" cy="-46" r="4.5" fill="#ffd9b0" stroke="#2b1a0e" stroke-width="2.5"/>
       </g>
     </g>
@@ -4021,6 +4166,7 @@ html.introing #mpBub{display:none}
   </g></g>
 </svg>
 <div id="mpBub" role="status" hidden></div>
+<div id="mpBub2" role="presentation" hidden></div>
 
 <!-- Pengingat: bubble video call -->
 <div class="idl" id="idCall" role="alertdialog" aria-labelledby="idCallT" aria-describedby="idCallP" hidden>
@@ -4062,15 +4208,16 @@ html.introing #mpBub{display:none}
   var person = $('mpPerson'), flip = $('mpFlip'), bob = $('mpBob'), head_ = $('mpHead'),
       legs = [$('mpLegA'), $('mpLegA2')], legs2 = [$('mpLegB'), $('mpLegB2')],
       arm = [$('mpArm'), $('mpArm2')], hand = $('mpHand'), hO = $('mpHandleO'), hL = $('mpHandle');
-  var ctx = cv.getContext('2d'), dpr = Math.min(window.devicePixelRatio || 1, 1.5), W = 0, H = 0;
+  var ctx = cv.getContext('2d'), dpr = Math.min(window.devicePixelRatio || 1, (window.matchMedia && matchMedia('(pointer: coarse)').matches) ? 1 : 1.5), W = 0, H = 0;
 
   var pts = [], head = 0, pending = 0, lastX = null, lastY = null, lastMove = -1e9;
   var st = 0;                      /* 0 = di luar layar, 1 = membersihkan, 2 = berjalan keluar */
   var mx = 0, my = 0, cx = 0, cy = 0, dir = 1, flipVal = 1, phase = 0, scrub = 0, swing = 0, pux = 0, puy = 1;
   var exitX = 0, exitY = 0, exitSince = 0, waitUntil = 0, raf = 0, last = 0;
   var LEN = 74, EDGE = 170, TOUCH_UP = 34, IDLE_MS = 600, touchMode = false, pauseUntil = 0;
-  /* Alur ngambek: story 0 = pegang pel, 2 = pakai mobil pel. annoy naik kalau kursor digerakkan terus-menerus. */
-  var ANGRY = 6500, ANGRY2 = 5200, story = 0, scn = null, rage = 0, annoy = 0, warned = 0, gk = 1, curX = 0, curY = 0, hdX = 0, hdY = 0;
+  /* Alur ngambek: story 0 = pegang pel, 2 = pakai mobil pel, 3 = petugas baru (pengganti yang resign), 4 = petugas pertama dipanggil kembali (akhir cerita).
+     annoy naik kalau kursor digerakkan terus-menerus. Kemajuan cerita diingat selama halaman terbuka, tidak diulang saat fitur dimatikan lalu dinyalakan. */
+  var ANGRY = 6500, ANGRY2 = 5200, ANGRY3 = 4200, story = 0, scn = null, rage = 0, annoy = 0, warned = 0, gk = 1, curX = 0, curY = 0, hdX = 0, hdY = 0;
   var carX = 0, carY = 0, wheel = 0, carAt = 0, dropOn = 0, drop = null, bubTO = 0;
   var carG = $('mpCar'), carF = $('mpCarF'), w1 = $('mpW1'), w2 = $('mpW2'), dropG = $('mpDrop'), bub = $('mpBub');
   var WARN = ['Eh eh… pelan-pelan dong gerak mousenya 😒', 'Kursormu lagi lomba lari, ya?! 😅', 'Aku baru pel, jangan dikotorin terus dong 🥺'];
@@ -4079,11 +4226,23 @@ html.introing #mpBub{display:none}
   var CAR_IN = ['Brrmm! Aku balik pakai mobil pel! 🚜', 'Kendaraan baru! Nggak bakal capek lagi! 😎', 'Minggir, aku ngepel SEMUANYA! 🧼'];
   var OUT = ['STOP! Mobil pel juga bisa capek tau! 😤', 'Aaargh! Mobilnya nyerah ngejar kamu! 😡', 'Aku turun! Kamu gerak terus kayak setrikaan! 😩'];
   var GRUMBLE = ['(ngedumel) Dasar pengunjung… 😒', 'Kerja keras bagai kuda, dikotorin lagi… 😮‍💨', 'Mending jadi satpam, duduk doang… 🥱', 'Besok aku ajukan cuti ah… 🏖️', 'Aku cuma mau ngepel dengan damai… 🕊️', 'Awas ya, kutulis di buku keluhan… 📒', 'Itu kursor lewat lagi… jangan lihat, jangan lihat… 🙈'];
-  var BACK = 'Hmph… yaudah, aku balik kerja. Tapi pelan-pelan ya! 😮‍💨';
+  var QUIT = ['Cukup! Aku RESIGN beneran! Cari orang lain aja! 👋😤', 'Surat pengunduran diriku sudah di meja bos! 📝😤'];
+  var TIRED2 = ['Hhh… baru sebentar kok udah capek banget 😮‍💨', 'Lantai ini kayak nggak ada ujungnya… 😩', 'Pantesan yang sebelumnya resign… 🥵'];
+  var CALL = 'Halo Pak Ikyy? Saya nyerah juga nih… 📞😭';
+  var BOSS1 = '📞 Pak Ikyy: Hah?! Yaudah, panggil Mas yang dulu balik! 🙄';
+  var BYE2 = 'Siap Pak! Saya pulang duluan… 👋😵';
+  var COMEBACK = ['Dipanggil balik… padahal udah resign 😑', 'Katanya cuma sebentar, ujung-ujungnya aku lagi… 😮‍💨'];
+  var BOSS2 = '📞 Pak Ikyy: Selamat datang kembali! Ngepel lagi ya, gaji naik 500 perak 💰';
+  var AGREE = 'Iya iya… tapi pelan-pelan ya geraknya! 😮‍💨';
+  var SIGH = ['Hhh… ya sudahlah, ngepel lagi… 😮‍💨', 'Nasibku memang di lantai ini… 🥲'];
+  /* v38: timer adegan dicatat supaya bisa dibatalkan saat fitur dimatikan di tengah adegan */
+  var tms = [];
+  function tm(fn, ms){ var id = setTimeout(function(){ var i = tms.indexOf(id); if(i >= 0) tms.splice(i, 1); fn(); }, ms); tms.push(id); return id; }
+  function clearTms(){ tms.forEach(clearTimeout); tms.length = 0; }
   var pick = function(a){ return a[(Math.random() * a.length) | 0]; };
   var warnTx = function(){ var t = pick(WARN); return touchMode ? t.replace('gerak mousenya', 'gerak jarinya').replace('Kursormu', 'Jarimu') : t; };
 
-  function size(){ W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+  function size(){ W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); lastSig = ''; }
   size(); addEventListener('resize', size);
   function skip(){ return document.documentElement.classList.contains('introing'); }
   function randEdge(){
@@ -4093,9 +4252,9 @@ html.introing #mpBub{display:none}
     if(e === 2) return { x: W * (.1 + .8 * r), y: -EDGE };
     return { x: W * (.1 + .8 * r), y: H + EDGE };
   }
-  function reset(){ resetStory(); pts.length = 0; head = 0; pending = 0; lastX = lastY = null; st = 0; waitUntil = 0; svg.classList.remove('on'); ctx.clearRect(0, 0, W, H); cancelAnimationFrame(raf); raf = 0; }
-  function apply(){ tgl.setAttribute('aria-pressed', String(enabled)); if(!enabled) reset(); }
-  tgl.addEventListener('click', function(){ enabled = !enabled; try { localStorage.setItem(KEY, enabled ? '1' : '0'); } catch(e) {} apply(); });
+  function reset(){ clearTms(); clearTimeout(ringT); ring.classList.remove('on'); resetStory(); pts.length = 0; head = 0; pending = 0; lastX = lastY = null; st = 0; waitUntil = 0; svg.classList.remove('on'); ctx.clearRect(0, 0, W, H); lastSig = ''; cancelAnimationFrame(raf); raf = 0; }
+  function apply(){ if(enabled && story === 6){ story = 0; sighs = 0; } tgl.setAttribute('aria-pressed', String(enabled)); if(!enabled) reset(); }
+  tgl.addEventListener('click', function(){ if(finClick()) return; enabled = !enabled; try { localStorage.setItem(KEY, enabled ? '1' : '0'); } catch(e) {} apply(); });
 
   /* ---- merekam jejak kursor / jari ---- */
   function record(x, y){
@@ -4107,36 +4266,56 @@ html.introing #mpBub{display:none}
     }
     lastX = x; lastY = y;
     if(head > 300){ pts.splice(0, head); head = 0; }
-    if(pts.length - head > 2500){ head = pts.length - 2000; pending = 0; }
+    var cap = touchMode ? 900 : 2500; if(pts.length - head > cap){ head = pts.length - Math.round(cap * .8); pending = 0; }
     kick();
   }
-  function point(x, y, touch){ if(!enabled || skip()) return; gk = touch ? .9 : 1; touchMode = !!touch; curX = x; curY = touch ? y - TOUCH_UP : y; record(x, curY); }
+  function point(x, y, touch){ if(!enabled || skip() || susp) return; gk = touch ? .9 : 1; touchMode = !!touch; curX = x; curY = touch ? y - TOUCH_UP : y; record(x, curY); }
   addEventListener('pointermove', function(e){ if(e.pointerType === 'touch') return; point(e.clientX, e.clientY, false); }, { passive: true });
   var ring = document.createElement('i'); ring.id = 'mopRing'; ring.setAttribute('aria-hidden', 'true'); document.body.append(ring); var ringT = 0;
   function showRing(x, y){ ring.style.transform = 'translate(' + x + 'px,' + (y - TOUCH_UP) + 'px)'; ring.classList.add('on'); clearTimeout(ringT); ringT = setTimeout(function(){ ring.classList.remove('on'); }, 900); }
-  function smudge(x, y){ for(var k = 0; k < 7; k++){ var a = k * 1.1; record(x + Math.cos(a) * 14, y - TOUCH_UP + Math.sin(a) * 14); } }
-  addEventListener('touchstart', function(e){ var t = e.touches && e.touches[0]; if(!t) return; lastX = null; point(t.clientX, t.clientY, true);
-    if(enabled && !skip()){ showRing(t.clientX, t.clientY); if(!(e.target.closest && e.target.closest('button,a,input,label,select,[role=option]'))) smudge(t.clientX, t.clientY); } }, { passive: true, capture: true });
-  addEventListener('touchmove', function(e){ var t = e.touches && e.touches[0]; if(t){ point(t.clientX, t.clientY, true); if(enabled && !skip()) showRing(t.clientX, t.clientY); } }, { passive: true, capture: true });
+  /* v38: ketukan tidak meninggalkan jejak. Kotor baru dihitung setelah jari mengusap lebih dari TAP_SLOP piksel. */
+  var TAP_SLOP = 12, tapX = 0, tapY = 0, tapArm = false;
+  addEventListener('touchstart', function(e){ var t = e.touches && e.touches[0]; if(!t) return;
+    lastX = null; tapX = t.clientX; tapY = t.clientY; tapArm = true; touchMode = true; gk = .9; curX = t.clientX; curY = t.clientY - TOUCH_UP;
+    if(enabled && !skip() && !susp) showRing(t.clientX, t.clientY); }, { passive: true, capture: true });
+  addEventListener('touchmove', function(e){ var t = e.touches && e.touches[0]; if(!t || susp) return;
+    if(performance.now() - scrollAt < 160){ lastX = null; tapArm = false; return; }
+    if(tapArm){
+      if(Math.hypot(t.clientX - tapX, t.clientY - tapY) < TAP_SLOP){ if(enabled && !skip()) showRing(t.clientX, t.clientY); return; }
+      tapArm = false; point(tapX, tapY, true);
+    }
+    point(t.clientX, t.clientY, true); if(enabled && !skip()) showRing(t.clientX, t.clientY); }, { passive: true, capture: true });
   document.addEventListener('visibilitychange', function(){ if(document.hidden){ cancelAnimationFrame(raf); raf = 0; } else kick(); });
 
-  function kick(){ if(!raf && enabled){ last = performance.now(); raf = requestAnimationFrame(tick); } }
+  /* v36: scroll tidak dihitung kotor; fitur berhenti saat Anti-Lag aktif / kamera menyala; disembunyikan saat pop-up pengingat terbuka */
+  var susp = false, scrollAt = -1e9, lastSig = '', sc = 1;
+  function calcSc(){ sc = Math.max(.5, Math.min(1.5, Math.sqrt(innerWidth * innerHeight) / 1024)); } calcSc(); addEventListener('resize', calcSc);
+  addEventListener('scroll', function(){ scrollAt = performance.now(); }, { passive: true, capture: true });
+  function camOn(){ try { return Array.prototype.some.call(document.querySelectorAll('video'), function(v){ return v.srcObject && v.srcObject.active; }); } catch(e) { return false; } }
+  setInterval(function(){
+    var n = document.documentElement.classList.contains('lite') || camOn();
+    if(n !== susp){ susp = n; if(susp){ reset(); ring.classList.remove('on'); } tgl.style.display = susp ? 'none' : ''; }
+    var pop = ['idCall', 'idLet'].some(function(id){ var e = document.getElementById(id); return e && !e.hidden; }), v = pop ? 'hidden' : '';
+    svg.style.visibility = v; cv.style.visibility = v; bub.style.visibility = v; if(bub2) bub2.style.visibility = v; ring.style.visibility = v; tgl.style.visibility = v;
+  }, 400);
+  function kick(){ if(!raf && enabled && !susp){ last = performance.now(); raf = requestAnimationFrame(tick); } }
 
   function tick(now){
     raf = 0;
-    if(!enabled || document.hidden) return;
+    if(!enabled || document.hidden || susp) return;
+    if(touchMode && now - last < 30){ raf = requestAnimationFrame(tick); return; }
     var dt = Math.min(.05, Math.max(0, (now - last) / 1000)); last = now;
     var active = now - lastMove < IDLE_MS, have = head < pts.length, moved = false, ux = 0, uy = 0;
     if(scn && rage && now - scn.t0 > 1100) throwMop(now);
     if(scn && !rage){ sceneStep(now, dt); drawTrail(); if(!bub.hidden) placeBub(); raf = requestAnimationFrame(tick); return; }
 
     if(st === 0){
-      if(have && (pending >= 60 || !active) && (story === 0 || (story === 2 && now >= carAt))){
+      if(have && (pending >= 60 || !active) && (story === 0 || story === 4 || ((story === 2 || story === 3) && now >= carAt))){
         var p = randEdge(); mx = cx = p.x; my = cy = p.y; dir = p.x < W / 2 ? 1 : -1; flipVal = dir; st = 1; waitUntil = 0; annoy = 0; warned = 0; svg.classList.add('on');
         if(story === 2){
           carX = cx; carY = cy; setLook(0, 0, 1); say(pick(CAR_IN), 2400);
-          if(dropOn){ dropOn = 0; dropG.style.opacity = 0; setTimeout(function(){ dropG.style.display = 'none'; }, 700); }
-        } else setLook(1, 1, 0);
+          if(dropOn){ dropOn = 0; dropG.style.opacity = 0; tm(function(){ dropG.style.display = 'none'; }, 700); }
+        } else { setLook(1, 1, 0); setNew(story === 3); }
       }
     }
     if(st === 1){
@@ -4163,17 +4342,17 @@ html.introing #mpBub{display:none}
     }
 
     if(st === 1 && !scn){
-      annoy = Math.max(0, annoy - dt * 380); var lim = story === 2 ? ANGRY2 : ANGRY;
+      annoy = Math.max(0, annoy - dt * (touchMode ? 200 : 380)); var lim = (story === 2 ? ANGRY2 : story === 3 ? ANGRY3 : ANGRY) * sc * (touchMode ? .8 : 1);
       if(annoy > lim * .6 && !warned){ warned = 1; say(warnTx(), 2400); pauseUntil = now + 2400; } else if(annoy < lim * .2) warned = 0;
-      if(annoy > lim) startScene(now);
+      if(annoy > lim){ if(story === 4){ if(sighs < FIN_AFTER){ sighs++; say(pick(SIGH), 2600); pauseUntil = now + 2400; annoy = lim * .3; warned = 1; } else startFinale(now); } else startScene(now); }
     }
     if(st === 9){}
     else if(st !== 0 && story === 2) carFrame(dt, moved, ux, uy);
     else if(st !== 0){
       if(moved && (ux || uy)){ pux = -uy; puy = ux; }
       scrub += dt * (moved ? 17 : 9);
-      var amp = moved ? 9 : (rage ? 14 : 4), sc = Math.sin(scrub);
-      var rx = mx + pux * sc * amp, ry = my + puy * sc * amp;
+      var amp = moved ? 9 : (rage ? 14 : 4), scs = Math.sin(scrub);
+      var rx = mx + pux * scs * amp, ry = my + puy * scs * amp;
 
       /* orang tertarik oleh gagang: jarak maksimal LEN, jadi selalu berada di belakang kepala pel */
       var ahx = 16 + Math.sin(scrub) * 3, ahy = -46 + Math.cos(scrub) * 2.5;
@@ -4200,6 +4379,8 @@ html.introing #mpBub{display:none}
     }
 
     /* jejak kotor yang belum dibersihkan */
+    var sig = head + ':' + pts.length + ':' + (st === 1 ? (mx | 0) + ',' + (my | 0) : '');
+    if(sig !== lastSig){ lastSig = sig;
     ctx.clearRect(0, 0, W, H);
     if(head < pts.length){
       ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
@@ -4209,6 +4390,7 @@ html.introing #mpBub{display:none}
       if(pts.length - head === 1) ctx.lineTo(f.x + .1, f.y);
       ctx.strokeStyle = TRAIL.wide; ctx.lineWidth = TRAIL.w1; ctx.stroke();
       ctx.strokeStyle = TRAIL.core; ctx.lineWidth = TRAIL.w2; ctx.stroke();
+    }
     }
 
     if(!bub.hidden) placeBub();
@@ -4227,12 +4409,16 @@ html.introing #mpBub{display:none}
     show([hO, hL, head_], mop); show(legs.concat(legs2, arm, [hand]), body);
     carG.style.display = car ? '' : 'none'; carG.style.opacity = 1;
   }
+  function setNew(on){ person.classList.toggle('np', !!on); }
   function resetStory(){
-    story = 0; scn = null; rage = 0; annoy = 0; warned = 0; dropOn = 0; drop = null; carAt = 0;
-    if(dropG) dropG.style.display = 'none'; if(bub) bub.hidden = true; clearTimeout(bubTO); setLook(1, 1, 0);
+    scn = null; rage = 0; annoy = 0; warned = 0; dropOn = 0; drop = null; carAt = 0; pauseUntil = 0;
+    if(dropG) dropG.style.display = 'none'; if(bub) bub.hidden = true; clearTimeout(bubTO); setLook(1, 1, 0); setNew(0);
     legs.concat(legs2).forEach(function(l){ l.setAttribute('y2', 0); });
+    /* v39: bersihkan sisa adegan finale */
+    if(P2) P2.g.style.display = 'none'; if(bub2){ bub2.hidden = true; clearTimeout(b2TO); } person.style.filter = ''; tgl.classList.remove('beg', 'beg2', 'press');
   }
   function drawTrail(){
+    lastSig = '';
     ctx.clearRect(0, 0, W, H);
     if(head >= pts.length) return;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath(); ctx.moveTo(pts[head].x, pts[head].y);
@@ -4266,8 +4452,9 @@ html.introing #mpBub{display:none}
   }
   function startScene(now){
     if(story === 0){ rage = 1; scn = { k: 'rage', t0: now, ph: 0 }; say(pick(RAGE), 2400); return; }
+    if(story === 3){ swapStart(now); return; }
     scn = { k: 'out', t0: now, ph: 0 }; st = 9; cx = carX; cy = carY; setLook(0, 1, 1); legsAt(0); armTo(18, -68);
-    say(pick(OUT), 2600); setTimeout(function(){ if(scn && scn.k === 'out') carG.style.opacity = 0; }, 2800);
+    say(pick(OUT), 2600); tm(function(){ if(scn && scn.k === 'out') carG.style.opacity = 0; }, 2800);
   }
   function throwMop(now){
     rage = 0; st = 9; scn.ph = 1; scn.t1 = now; setLook(0, 1, 0); dropOn = 1;
@@ -4282,19 +4469,61 @@ html.introing #mpBub{display:none}
     }
     dropG.setAttribute('transform', 'translate(' + drop.x.toFixed(1) + ',' + drop.y.toFixed(1) + ') rotate(' + drop.a.toFixed(1) + ')');
   }
-  function endScene(now, wait){
-    scn = null; st = 0; story = 2; annoy = 0; carAt = now + wait; bub.hidden = true; carG.style.display = 'none';
+  function endScene(now, wait, next){
+    scn = null; st = 0; story = next || story; annoy = 0; carAt = now + wait; bub.hidden = true; carG.style.display = 'none';
     if(!dropOn) svg.classList.remove('on');
+  }
+
+  /* Adegan 'swap' (story 3): petugas baru juga kecapekan, menelepon bos, lalu petugas pertama dipanggil kembali untuk ngepel lagi. */
+  function swapStart(now){
+    scn = { k: 'swap', t0: now, ph: 0 }; st = 9; setLook(0, 1, 0); dropOn = 1;
+    drop = { x: hdX, y: hdY, fy: cy, vx: (Math.random() < .5 ? -1 : 1) * (60 + Math.random() * 50), vy: -300, a: 0, va: (Math.random() < .5 ? -1 : 1) * 4, done: 0 };
+    dropG.style.opacity = 1; dropG.style.display = ''; say(pick(TIRED2), 2800);
+  }
+  function swapStep(s, now, dt){
+    var t = now - s.t0, u;
+    if(s.ph === 0){                      /* capek, terengah-engah */
+      face(curX); legsAt(0); armTo(16, -38); setBob(7 + Math.sin(now / 160) * 2, 4 + Math.sin(now / 110) * 3); put();
+      if(t > 3000){ s.ph = 1; s.t1 = now; s.said = 0; say('Aku duduk dulu… nggak kuat 🥵', 2400); }
+    } else if(s.ph === 1){               /* duduk, lalu menelepon bos */
+      u = now - s.t1;
+      legsAt(0, 28, -24); armTo(16, -38); setBob(18 + Math.sin(now / 400), 5); put();
+      if(s.said === 0 && u > 2600){ s.said = 1; say(CALL, 2800); }
+      if(s.said === 1 && u > 5600){ s.said = 2; say(BOSS1, 3200); }
+      if(u > 9000){ s.ph = 2; s.t2 = now; s.tx = cx < W / 2 ? -EDGE : W + EDGE; say(BYE2, 2400); }
+    } else if(s.ph === 2){               /* petugas baru pulang */
+      armTo(18, -68);
+      if(walkTo(s.tx, cy, 320, dt) || now - s.t2 > 9000){ s.ph = 3; s.t3 = now; bub.hidden = true; }
+    } else if(s.ph === 3){               /* jeda, petugas pertama dipanggil */
+      if(now - s.t3 > 1800){
+        setNew(0); setLook(0, 1, 0); s.ph = 4; s.t4 = now;
+        cx = drop && drop.x < W / 2 ? W + EDGE : -EDGE; cy = drop ? drop.fy : cy; dir = cx < W / 2 ? 1 : -1; flipVal = dir;
+        say(pick(COMEBACK), 3000);
+      }
+    } else if(s.ph === 4){               /* jalan ke pel yang tergeletak */
+      armTo(16, -46);
+      if(walkTo(drop ? drop.x : cx, cy, 300, dt) || now - s.t4 > 9000){ s.ph = 5; s.t5 = now; say(BOSS2, 3400); }
+    } else if(s.ph === 5){               /* dimarahi bos lewat telepon */
+      legsAt(0); armTo(16, -38); setBob(0, 0); put();
+      if(now - s.t5 > 3400){
+        s.ph = 6; dropOn = 0; dropG.style.opacity = 0; tm(function(){ dropG.style.display = 'none'; }, 600); drop = null;
+        say(AGREE, 2800);
+        /* akhir cerita: petugas pertama kembali bertugas */
+        story = 4; scn = null; st = 1; mx = cx; my = cy; annoy = 0; warned = 0; pauseUntil = 0; setLook(1, 1, 0);
+      }
+    }
   }
   function sceneStep(now, dt){
     var s = scn, t = now - s.t0; dropStep(dt);
+    if(s.k === 'swap'){ swapStep(s, now, dt); return; }
+    if(s.k === 'fin'){ finStep(s, now, dt); return; }
     if(s.k === 'rage'){
       if(s.ph === 1){
         face(curX); armPoint(); legsAt(0); setBob(-Math.abs(Math.sin(now / 90)) * 5, Math.sin(now / 70) * 4); put();
         if(now - s.t1 > 3000){ s.ph = 2; s.tx = cx < W / 2 ? -EDGE : W + EDGE; bub.hidden = true; }
       } else {
         armTo(18, -68);
-        if(walkTo(s.tx, cy, 340, dt) || now - s.t1 > 9000) endScene(now, 4500 + Math.random() * 2500);
+        if(walkTo(s.tx, cy, 340, dt) || now - s.t1 > 9000) endScene(now, touchMode ? 1500 + Math.random() * 1000 : 4500 + Math.random() * 2500, 2);
       }
       return;
     }
@@ -4307,12 +4536,134 @@ html.introing #mpBub{display:none}
     } else if(s.ph === 2){               /* duduk ngedumel */
       flipVal += (dir - flipVal) * .35; legsAt(0, 28, -24); armTo(16, -38); setBob(18 + Math.sin(now / 400), 5); put();
       if(now - s.gt > 3800){ s.gt = now; say(pick(GRUMBLE), 3200); }
-      if(now - s.t2 > s.dur){ s.ph = 3; s.t3 = now; say(BACK, 2800); }
+      if(now - s.t2 > s.dur){ s.ph = 3; s.t3 = now; say(pick(QUIT), 3000); }
     } else {                             /* bangun, balik kerja */
       if(now - s.t3 < 1200){ legsAt(0); setBob(0, 0); put(); return; }
       armTo(16, -46);
-      if(walkTo(cx < W / 2 ? -EDGE : W + EDGE, cy, 300, dt) || now - s.t3 > 9000) endScene(now, 1500);
+      if(walkTo(cx < W / 2 ? -EDGE : W + EDGE, cy, 300, dt) || now - s.t3 > 9000) endScene(now, 2500 + Math.random() * 1500, 3);
     }
+  }
+
+  /* ===================== v39: Finale — petugas pertama muak, minta user klik ikon pel untuk resign =====================
+     Alur: petugas pertama (setelah dipanggil balik) kena batas sabar → pel dijatuhkan → petugas baru (karakter 2) muncul dari sisi layar
+     acak & menertawakannya → petugas pertama marah (makin parah tiap ronde) → capek & muak → jalan ke ikon 🧹 → minta user klik
+     (sopan → memohon → memaksa). User klik = resign berterima kasih. Tidak direspons ±14 detik = dia menekan ikonnya sendiri.
+     Keduanya mematikan fitur (tersimpan di localStorage, hidupkan lagi lewat ikon 🧹). Atur lewat konstanta di bawah. */
+  var FIN_AFTER = 1;        /* berapa kali petugas pertama menghela napas (SIGH) dulu sebelum finale */
+  var FIN_WAIT = 14000;     /* ms menunggu user klik ikon sebelum dia mematikan sendiri */
+  var sighs = 0;
+  var LAUGH = ['HAHAHA! 🤣', 'Wkwkwk, dipanggil balik juga akhirnya! 😆', 'Hihihi~ kasian banget! 😝'];
+  var ANGER = ['Heh! Jangan ketawa! 💢', 'DIAM KAMU! Aku lagi serius! 😠💢', 'AWAS YA KAMU!! SINI KAMU!! 😡💢'];
+  var TIRED3 = ['Hhh… udah deh… 😮‍💨', 'Capek aku… muak… 🥱', 'Diketawain terus… aku udah nggak kuat 😩'];
+  var ASK = ['Eh kamu… tolong klik ikon sapu 🧹 itu dong. Aku mau resign… 🙏', 'Please… aku capek banget. Klik ikon 🧹 itu ya? 🥺', 'KLIK SEKARANG!! AKU MAU RESIGN!! 😤💢'];
+  var THX = 'Makasih banget! Akhirnya aku resign! Dadah~ 👋😄';
+  var SELF = 'Ya sudah… kumatikan sendiri aja. Dadah… 😮‍💨👋';
+  var P2 = null, bub2 = $('mpBub2'), b2TO = 0, c2 = { x: 0, y: 0, dir: 1, fv: 1, ph: 0, tx: 0, ty: 0, ex: 0, ey: 0 };
+  (function(){
+    var g = person.cloneNode(true); g.id = 'mpPerson2';
+    g.querySelectorAll('[id]').forEach(function(e){ e.id += '_2'; });
+    g.style.display = 'none'; svg.insertBefore(g, person);
+    var q = function(id){ return document.getElementById(id + '_2'); };
+    P2 = { g: g, flip: q('mpFlip'), bob: q('mpBob'), legs: [q('mpLegA'), q('mpLegA2')], legs2: [q('mpLegB'), q('mpLegB2')], arm: [q('mpArm'), q('mpArm2')], hand: q('mpHand') };
+  })();
+  function p2Put(){ P2.g.setAttribute('transform', 'translate(' + c2.x.toFixed(1) + ',' + c2.y.toFixed(1) + ')'); P2.flip.setAttribute('transform', 'scale(' + c2.fv.toFixed(3) + ',1)'); }
+  function p2Legs(sw){ P2.legs.forEach(function(l){ l.setAttribute('x2', (-8 + sw).toFixed(1)); }); P2.legs2.forEach(function(l){ l.setAttribute('x2', (8 - sw).toFixed(1)); }); }
+  function p2Arm(x, y){ P2.arm.forEach(function(a){ a.setAttribute('x2', x.toFixed(1)); a.setAttribute('y2', y.toFixed(1)); }); P2.hand.setAttribute('cx', x.toFixed(1)); P2.hand.setAttribute('cy', y.toFixed(1)); }
+  function p2Bob(dy, rot){ P2.bob.setAttribute('transform', 'translate(0,' + dy.toFixed(1) + ') rotate(' + rot.toFixed(1) + ' 0 -30)'); }
+  function p2Walk(tx, ty, sp, dt){
+    var dx = tx - c2.x, dy = ty - c2.y, d = Math.hypot(dx, dy), s = Math.min(sp * dt, d);
+    if(d > 1){ c2.x += dx / d * s; c2.y += dy / d * s; if(Math.abs(dx) > 4) c2.dir = dx > 0 ? 1 : -1; c2.ph += s * .16; }
+    c2.fv += (c2.dir - c2.fv) * .35; p2Legs(Math.sin(c2.ph) * 9); p2Bob(-Math.abs(Math.sin(c2.ph)) * 3, 0); p2Put();
+    return d - s < 2;
+  }
+  function say2(t, ms){ clearTimeout(b2TO); bub2.hidden = true; void bub2.offsetWidth; bub2.textContent = t; bub2.hidden = false; placeBub2(); b2TO = setTimeout(function(){ bub2.hidden = true; }, ms); }
+  function placeBub2(){
+    var w = bub2.offsetWidth, h = bub2.offsetHeight, l = Math.min(Math.max(8, c2.x - w / 2), W - w - 8);
+    var t = Math.max(8, c2.y - 104 - h - (bub.hidden ? 0 : bub.offsetHeight + 12));
+    bub2.style.left = l + 'px'; bub2.style.top = t + 'px'; bub2.style.setProperty('--tx', Math.min(Math.max(18, c2.x - l), w - 18) + 'px');
+  }
+  function sideOf(p){ return p.x < 0 ? 0 : p.x > W ? 1 : p.y < 0 ? 2 : 3; }
+  function edgeNot(side){ var p, i = 0; do { p = randEdge(); } while(sideOf(p) === side && ++i < 12); return p; }
+  function go(s, ph, now){ s.ph = ph; s.tp = now; }
+  function idle1(now, fx, amp){ face(fx); legsAt(0); armTo(16, -38); setBob(6 + Math.sin(now / 170) * 2, (4 + Math.sin(now / 110) * 3) * (amp || 1)); put(); }
+  function laugh2(now, k){
+    p2Legs(0); p2Arm(26, -52 + Math.sin(now / 60) * 5); p2Bob(-Math.abs(Math.sin(now / 70)) * 7 * k, Math.sin(now / 55) * 7 * k);
+    c2.dir = c2.x < cx ? 1 : -1; c2.fv += (c2.dir - c2.fv) * .35; p2Put();
+  }
+  function startFinale(now){
+    scn = { k: 'fin', t0: now, tp: now, ph: 0, r: 0, rounds: 2 + ((Math.random() * 2) | 0), edge: -1, ask: -1, ix: 0, tx: 0, ty: 0, l2: 0 };
+    st = 9; setLook(0, 1, 0); dropOn = 1;
+    drop = { x: hdX, y: hdY, fy: cy, vx: (Math.random() < .5 ? -1 : 1) * (70 + Math.random() * 50), vy: -320, a: 0, va: (Math.random() < .5 ? -1 : 1) * 5, done: 0 };
+    dropG.style.opacity = 1; dropG.style.display = ''; say('Hhh… aku nggak kuat lagi… 😮‍💨', 2600);
+  }
+  /* user mengklik ikon 🧹 saat petugas memintanya → resign dengan senang hati (fitur dimatikan setelah dia pergi) */
+  function finClick(){
+    var s = scn; if(!s || s.k !== 'fin' || s.ph < 6 || s.ph > 7) return false;
+    tgl.classList.remove('beg', 'beg2'); go(s, 8, performance.now()); say(THX, 3000); return true;
+  }
+  function finish(){
+    tgl.classList.remove('beg', 'beg2', 'press');
+    story = 6; enabled = false; try { localStorage.setItem(KEY, '0'); } catch(e) {}
+    apply();
+  }
+  function finStep(s, now, dt){
+    var u = now - s.tp, p, r = s.r;
+    if(s.ph === 0){                              /* berdiri lesu, menunggu */
+      idle1(now, curX);
+      if(u > (r ? 1500 : 2800)){
+        p = edgeNot(s.edge); s.edge = sideOf(p); c2.x = p.x; c2.y = p.y; c2.dir = p.x < W / 2 ? 1 : -1; c2.fv = c2.dir;
+        c2.tx = Math.max(40, Math.min(W - 40, cx + (cx < W / 2 ? 1 : -1) * 96)); c2.ty = cy;
+        P2.g.style.display = ''; p2Put(); go(s, 1, now);
+      }
+    } else if(s.ph === 1){                       /* karakter 2 datang dari sisi layar acak */
+      idle1(now, c2.x);
+      if(p2Walk(c2.tx, c2.ty, 340, dt) || u > 9000){ s.r++; go(s, 2, now); say2(pick(LAUGH), 2400); }
+    } else if(s.ph === 2){                       /* menertawakan */
+      idle1(now, c2.x); laugh2(now, 1);
+      if(u > 1800){ go(s, 3, now); say(ANGER[Math.min(s.r - 1, ANGER.length - 1)], 3000); }
+    } else if(s.ph === 3){                       /* karakter 1 marah, makin parah tiap ronde */
+      face(c2.x); legsAt(0); armTo(14, -72 + Math.sin(now / 60) * 4);
+      setBob(-Math.abs(Math.sin(now / (90 - r * 18))) * (3 + r * 2), Math.sin(now / 45) * (2 + r * 2.5)); put();
+      person.style.filter = 'drop-shadow(0 0 ' + (3 + r * 3) + 'px rgba(255,40,40,.95))';
+      laugh2(now, .6);
+      if(u > 1400 && !s.l2){ s.l2 = 1; say2('WKWKWK 🤣', 1500); }
+      if(u > 3200){ person.style.filter = ''; s.l2 = 0; p = edgeNot(s.edge); s.edge = sideOf(p); c2.ex = p.x; c2.ey = p.y; go(s, 4, now); }
+    } else if(s.ph === 4){                       /* karakter 2 kabur lewat sisi lain */
+      idle1(now, c2.x, .5); p2Arm(18, -68);
+      if(p2Walk(c2.ex, c2.ey, 440, dt) || u > 7000){
+        P2.g.style.display = 'none'; bub2.hidden = true;
+        if(s.r >= s.rounds){ go(s, 5, now); say(pick(TIRED3), 3000); } else go(s, 0, now);
+      }
+    } else if(s.ph === 5){                       /* capek dan muak */
+      face(W / 2); legsAt(0); armTo(16, -34); setBob(9 + Math.sin(now / 190) * 2, 6 + Math.sin(now / 130) * 3); put();
+      if(u > 3200){
+        var rc = tgl.getBoundingClientRect(); s.ix = rc.left + rc.width / 2;
+        s.tx = s.ix < W / 2 ? rc.right + 46 : rc.left - 46; s.ty = Math.min(rc.bottom, H - 4);
+        say('Udah, aku mau resign aja… 🚶', 2600); go(s, 6, now);
+      }
+    } else if(s.ph === 6){                       /* jalan ke ikon pel */
+      armTo(16, -46);
+      if(walkTo(s.tx, s.ty, 250, dt) || u > 12000){ cx = s.tx; cy = s.ty; tgl.classList.add('beg'); s.ask = -1; go(s, 7, now); }
+    } else if(s.ph === 7){                       /* menunggu: sopan → memohon → memaksa */
+      var k = u > 8500 ? 2 : u > 4500 ? 1 : 0;
+      if(k !== s.ask){ s.ask = k; say(ASK[k], k === 2 ? FIN_WAIT - 8500 : 4200); tgl.classList.toggle('beg2', k === 2); }
+      face(s.ix); legsAt(0); armTo(28 + Math.sin(now / 150) * 4, -50 - (k === 2 ? 6 : 0));
+      setBob(k === 2 ? -Math.abs(Math.sin(now / 80)) * 6 : -Math.abs(Math.sin(now / 200)) * 2, k === 2 ? Math.sin(now / 50) * 5 : 0); put();
+      if(u > FIN_WAIT){ tgl.classList.remove('beg', 'beg2'); say(SELF, 2800); go(s, 10, now); }
+    } else if(s.ph === 8){                       /* user klik: senang, melambai */
+      face(W / 2); legsAt(0); armTo(18, -70 + Math.sin(now / 90) * 6); setBob(-Math.abs(Math.sin(now / 120)) * 10, 0); put();
+      if(u > 2800){ s.tx = cx < W / 2 ? -EDGE : W + EDGE; go(s, 9, now); }
+    } else if(s.ph === 9){                       /* pergi ke luar layar, lalu fitur mati */
+      armTo(18, -68);
+      if(walkTo(s.tx, cy, 300, dt) || u > 9000){ finish(); return; }
+    } else if(s.ph === 10){                      /* tidak direspons: dia menekan ikon sendiri */
+      face(s.ix); legsAt(0);
+      if(u < 2800){ armTo(16, -38); setBob(8 + Math.sin(now / 200) * 2, 5); }
+      else { armTo(30, -46); setBob(-2, 0); if(u > 2850) tgl.classList.add('press'); }
+      put();
+      if(u > 3300){ finish(); return; }
+    }
+    if(!bub2.hidden) placeBub2();
   }
   apply();
 })();
@@ -4330,9 +4681,29 @@ html.introing #mpBub{display:none}
   function blocked(){ var h = document.documentElement; return document.hidden || h.classList.contains('introing') || cameraOn() || shown >= C.max; }
   function arm(ms){ clearTimeout(tIdle); tIdle = setTimeout(fire, ms); }
 
-  function activity(){
+  /* v38: pop-up hilang sendiri begitu pengunjung aktif lagi. Gerak mouse menuju tombol pop-up tidak dihitung. */
+  var pmX = null, pmY = 0, mvAway = 0;
+  function popBox(){ return state === 1 ? call : let_.querySelector('.pp'); }
+  function real(e){
+    if(!e) return false;
+    var t = e.target; if(t && t.closest && t.closest('#idCall, #idLet .pp')) return false;
+    if(e.type === 'pointerdown' || e.type === 'wheel' || e.type === 'touchstart') return true;
+    return e.type === 'keydown' && e.key !== 'Escape' && e.key !== 'Tab' && e.key !== 'Shift';
+  }
+  function moveAway(e){
+    if(e.pointerType === 'touch') return;
+    if(pmX === null){ pmX = e.clientX; pmY = e.clientY; return; }
+    var dx = e.clientX - pmX, dy = e.clientY - pmY, d = Math.hypot(dx, dy); pmX = e.clientX; pmY = e.clientY; if(!d) return;
+    var b = popBox(); if(!b) return; var r = b.getBoundingClientRect();
+    if(e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return;
+    var vx = r.left + r.width / 2 - e.clientX, vy = r.top + r.height / 2 - e.clientY, vl = Math.hypot(vx, vy) || 1;
+    if((dx * vx + dy * vy) / (d * vl) > .3){ mvAway = Math.max(0, mvAway - d * .5); return; }  /* mendekati pop-up */
+    mvAway += d; if(mvAway >= 500) close();
+  }
+  function activity(e){
     lastAct = Date.now();
-    if(state === 0){ startIdle = lastAct; arm(C.first); }
+    if(state === 0){ startIdle = lastAct; arm(shown ? C.cooldown : C.first); }
+    else if(Date.now() >= readyAt){ if(e && e.type === 'pointermove') moveAway(e); else if(real(e)) close(); }
   }
   ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll'].forEach(function(ev){ addEventListener(ev, activity, { passive: true, capture: true }); });
   document.addEventListener('visibilitychange', function(){ if(!document.hidden) activity(); });
@@ -4359,14 +4730,14 @@ html.introing #mpBub{display:none}
     var b = let_.querySelector('.idb.ok'); if(b) try { b.focus({ preventScroll: true }); } catch(e) {}
   }
   var readyAt = 0, rdyT = 0;
-  function arming(box){ readyAt = Date.now() + 900; box.classList.remove('rdy'); clearTimeout(rdyT); rdyT = setTimeout(function(){ box.classList.add('rdy'); }, 900); }
+  function arming(box){ pmX = null; mvAway = 0; readyAt = Date.now() + 900; box.classList.remove('rdy'); clearTimeout(rdyT); rdyT = setTimeout(function(){ box.classList.add('rdy'); }, 900); }
   function close(){
-    clearTimeout(tEsc); state = 0; call.hidden = true; let_.hidden = true;
+    clearTimeout(tEsc); clearTimeout(rdyT); state = 0; call.hidden = true; let_.hidden = true;
     lastAct = startIdle = Date.now();
     if(shown < C.max) arm(C.cooldown);
   }
   function go(){
-    close(); shown = C.max; /* sudah merespons, tidak perlu diingatkan lagi */
+    close(); shown = C.max; clearTimeout(tIdle); /* sudah merespons, tidak perlu diingatkan lagi */
     var cta = document.getElementById('cta');
     if(cta) cta.click(); else { var bo = document.getElementById('booth'); if(bo) bo.scrollIntoView({ behavior: 'smooth' }); }
   }
